@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+    
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="">
+    <meta name="author" content="A Hugo User"> 
+
+    <title>nagios rate plugin - http://localhost:1313</title>
+    <link rel="canonical" href="http://localhost:1313/post/nagios-rate-plugin">
+    
+    <link href="http://localhost:1313/css/bootstrap.css" rel="stylesheet">
+    <link href="http://localhost:1313/css/font-awesome.css" rel="stylesheet">
+    <link href="http://localhost:1313/css/custom.css" rel="stylesheet">
+    <link href="http://localhost:1313/css/monokai.css" rel="stylesheet">
+
+    
+</head>
+<body>
+    <nav class="navbar navbar-default navbar-fixed-top" role="navigation">
+        <div class="container">
+            <div class="navbar-header">
+                <button type="button" class="navbar-toggle" data-toggle="collapse" data-target=".navbar-ex1-collapse">
+                    <span class="sr-only">Toggle Navigation</span>
+                    <span class="icon-bar"></span>
+                    <span class="icon-bar"></span>
+                    <span class="icon-bar"></span>
+                </button>
+                <a class="navbar-brand" href="http://localhost:1313">Terhanian.com Blog</a>
+            </div>
+            <div class="collapse navbar-collapse navbar-ex1-collapse">
+                <ul class="nav navbar-nav">
+                    <li><a href="http://localhost:1313/post/">Post Index</a></li>
+                    
+                </ul>
+            </div>
+        </div>
+    </nav>
+<div class="container">
+    <div class="row">
+        <div class="col-md-9">
+            <div class="well well-sm">
+                    <h3>nagios rate plugin<br> <small></small></h3>
+                    <hr>
+                    
+
+<h3 id="toc_0">Nagios Rate Plugin</h3>
+
+<div class="highlight"><pre><span class="cm">/*</span>
+<span class="cm">nagios-disk-rate plugin is used to determine how fast a disk will fill up.</span>
+<span class="cm">*/</span>
+<span class="kn">package</span> <span class="nx">main</span>
+
+<span class="kn">import</span> <span class="p">(</span>
+  <span class="s">&quot;bytes&quot;</span>
+  <span class="s">&quot;encoding/binary&quot;</span>
+  <span class="s">&quot;encoding/gob&quot;</span>
+  <span class="s">&quot;flag&quot;</span>
+  <span class="s">&quot;fmt&quot;</span>
+  <span class="s">&quot;log&quot;</span>
+  <span class="s">&quot;os&quot;</span>
+  <span class="s">&quot;os/exec&quot;</span>
+  <span class="s">&quot;regexp&quot;</span>
+  <span class="s">&quot;strings&quot;</span>
+  <span class="s">&quot;time&quot;</span>
+<span class="p">)</span>
+
+<span class="kd">var</span> <span class="p">(</span>
+  <span class="nx">warningSeconds</span>  <span class="o">*</span><span class="kt">int</span>    <span class="p">=</span> <span class="nx">flag</span><span class="p">.</span><span class="nx">Int</span><span class="p">(</span><span class="s">&quot;w&quot;</span><span class="p">,</span> <span class="mi">86400</span><span class="p">,</span> <span class="s">&quot;seconds before mountpoint fills up (default 24 hours)&quot;</span><span class="p">)</span>
+  <span class="nx">criticalSeconds</span> <span class="o">*</span><span class="kt">int</span>    <span class="p">=</span> <span class="nx">flag</span><span class="p">.</span><span class="nx">Int</span><span class="p">(</span><span class="s">&quot;c&quot;</span><span class="p">,</span> <span class="mi">43200</span><span class="p">,</span> <span class="s">&quot;seconds before mountpoint fills up (default 12 hours)&quot;</span><span class="p">)</span>
+  <span class="nx">mountPoint</span>      <span class="o">*</span><span class="kt">string</span> <span class="p">=</span> <span class="nx">flag</span><span class="p">.</span><span class="nx">String</span><span class="p">(</span><span class="s">&quot;m&quot;</span><span class="p">,</span> <span class="s">&quot;/&quot;</span><span class="p">,</span> <span class="s">&quot;sets our mountpoint to be watched&quot;</span><span class="p">)</span>
+  <span class="nx">amountOfRunLogs</span> <span class="o">*</span><span class="kt">int</span>    <span class="p">=</span> <span class="nx">flag</span><span class="p">.</span><span class="nx">Int</span><span class="p">(</span><span class="s">&quot;r&quot;</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="s">&quot;how many runs will we use to get disk rate average (default 3 runs)&quot;</span><span class="p">)</span>
+  <span class="nx">debug</span>           <span class="o">*</span><span class="kt">bool</span>   <span class="p">=</span> <span class="nx">flag</span><span class="p">.</span><span class="nx">Bool</span><span class="p">(</span><span class="s">&quot;d&quot;</span><span class="p">,</span> <span class="kc">false</span><span class="p">,</span> <span class="s">&quot;turn debug output on&quot;</span><span class="p">)</span>
+  <span class="nx">tmpDir</span>          <span class="kt">string</span>  <span class="p">=</span> <span class="s">&quot;/tmp&quot;</span>
+<span class="p">)</span>
+
+<span class="kd">func</span> <span class="nx">main</span><span class="p">()</span> <span class="p">{</span>
+  <span class="c1">// parse commandline arguements</span>
+  <span class="nx">flag</span><span class="p">.</span><span class="nx">Parse</span><span class="p">()</span>
+
+  <span class="c1">// run df and parse output</span>
+  <span class="nx">dfData</span> <span class="o">:=</span> <span class="nx">parseDF</span><span class="p">()</span>
+
+  <span class="c1">// create timestamp for df data</span>
+  <span class="nx">timeNow</span> <span class="o">:=</span> <span class="nx">time</span><span class="p">.</span><span class="nx">Now</span><span class="p">()</span>
+
+  <span class="c1">// load data from file</span>
+  <span class="nx">file</span> <span class="o">:=</span> <span class="nx">tmpDir</span> <span class="o">+</span> <span class="s">&quot;/&quot;</span> <span class="o">+</span> <span class="nx">mntPointName</span><span class="p">(</span><span class="nx">mountPoint</span><span class="p">)</span> <span class="o">+</span> <span class="s">&quot;.gob&quot;</span>
+  <span class="nx">mntMap</span> <span class="o">:=</span> <span class="nx">GobDecoder</span><span class="p">(</span><span class="nx">file</span><span class="p">)</span>
+
+  <span class="c1">// create new record</span>
+  <span class="nx">mntMapTmp</span> <span class="o">:=</span> <span class="o">&amp;</span><span class="nx">MountState</span><span class="p">{</span><span class="nx">timeNow</span><span class="p">.</span><span class="nx">Unix</span><span class="p">(),</span> <span class="nb">string</span><span class="p">(</span><span class="nx">dfData</span><span class="p">[</span><span class="mi">1</span><span class="p">]),</span> <span class="nb">string</span><span class="p">(</span><span class="nx">dfData</span><span class="p">[</span><span class="mi">6</span><span class="p">]),</span> <span class="nx">read_int32</span><span class="p">(</span><span class="nx">dfData</span><span class="p">[</span><span class="mi">4</span><span class="p">])}</span>
+
+  <span class="c1">// add new record</span>
+  <span class="nx">mntMap</span><span class="p">.</span><span class="nx">add</span><span class="p">(</span><span class="nx">mntMapTmp</span><span class="p">)</span>
+
+  <span class="nx">rate</span> <span class="o">:=</span> <span class="nx">mntMap</span><span class="p">.</span><span class="nx">getRate</span><span class="p">()</span>
+
+  <span class="nx">mntMap</span><span class="p">.</span><span class="nx">getBytesToGo</span><span class="p">()</span>
+
+  <span class="nx">fmt</span><span class="p">.</span><span class="nx">Println</span><span class="p">(</span><span class="s">&quot;Rate: &quot;</span><span class="p">,</span> <span class="nx">rate</span><span class="p">)</span>
+  <span class="nx">fmt</span><span class="p">.</span><span class="nx">Printf</span><span class="p">(</span><span class="s">&quot;secondsToGo: %v := bytesToGo: %v / rate: %v&quot;</span><span class="p">,</span> <span class="nx">secondsToGo</span><span class="p">,</span> <span class="nx">bytesToGo</span><span class="p">,</span> <span class="nx">rate</span><span class="p">)</span>
+
+  <span class="c1">// save data</span>
+  <span class="nx">GobEncoder</span><span class="p">(</span><span class="nx">file</span><span class="p">,</span> <span class="nx">mntMap</span><span class="p">)</span>
+
+  <span class="c1">// debug</span>
+  <span class="k">if</span> <span class="o">*</span><span class="nx">debug</span> <span class="p">{</span>
+    <span class="nx">fmt</span><span class="p">.</span><span class="nx">Printf</span><span class="p">(</span><span class="s">&quot;File: %v\n&quot;</span><span class="p">,</span> <span class="nx">file</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="nx">mntMap</span><span class="p">)</span> <span class="o">!=</span> <span class="mi">0</span> <span class="p">{</span>
+      <span class="k">for</span> <span class="nx">k</span><span class="p">,</span> <span class="nx">v</span> <span class="o">:=</span> <span class="k">range</span> <span class="nx">mntMap</span> <span class="p">{</span>
+        <span class="nx">fmt</span><span class="p">.</span><span class="nx">Printf</span><span class="p">(</span><span class="s">&quot;%v: %v\n&quot;</span><span class="p">,</span> <span class="nx">k</span><span class="p">,</span> <span class="nx">v</span><span class="p">)</span>
+      <span class="p">}</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+      <span class="nx">fmt</span><span class="p">.</span><span class="nx">Println</span><span class="p">(</span><span class="s">&quot;Cache is empty&quot;</span><span class="p">)</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kd">type</span> <span class="nx">MountState</span> <span class="kd">struct</span> <span class="p">{</span>
+  <span class="nx">Timestamp</span>  <span class="kt">int64</span>  <span class="c1">// Time of run through</span>
+  <span class="nx">Device</span>     <span class="kt">string</span> <span class="c1">// Mount device</span>
+  <span class="nx">MountPoint</span> <span class="kt">string</span> <span class="c1">// Mount folder path</span>
+  <span class="nx">Available</span>  <span class="kt">int32</span>  <span class="c1">// Data bytes available on device</span>
+<span class="p">}</span>
+
+<span class="kd">type</span> <span class="nx">MapMountState</span> <span class="kd">map</span><span class="p">[</span><span class="kt">int</span><span class="p">]</span><span class="o">*</span><span class="nx">MountState</span>
+
+<span class="kd">func</span> <span class="p">(</span><span class="nx">m</span> <span class="o">*</span><span class="nx">MapMountState</span><span class="p">)</span> <span class="nx">getBytesToGo</span><span class="p">()</span> <span class="kt">int32</span> <span class="p">{</span>
+  <span class="nx">bytesToGo</span> <span class="o">:=</span> <span class="nx">mntMap</span><span class="p">.</span><span class="nx">Available</span> <span class="o">*</span> <span class="mi">1024</span>
+  <span class="nx">secondsToGo</span> <span class="o">:=</span> <span class="nx">bytesToGo</span> <span class="o">/</span> <span class="nx">rate</span>
+<span class="p">}</span>
+
+<span class="kd">func</span> <span class="p">(</span><span class="nx">m</span> <span class="o">*</span><span class="nx">MapMountState</span><span class="p">)</span> <span class="nx">getRate</span><span class="p">()</span> <span class="kt">int32</span> <span class="p">{</span>
+  <span class="kd">var</span> <span class="nx">rate</span> <span class="kt">int32</span> <span class="p">=</span> <span class="mi">1</span>
+  <span class="kd">var</span> <span class="nx">rate2</span> <span class="kt">int32</span>
+
+  <span class="nx">m2</span> <span class="o">:=</span> <span class="o">*</span><span class="nx">m</span>
+
+  <span class="k">for</span> <span class="nx">i</span> <span class="o">:=</span> <span class="mi">1</span><span class="p">;</span> <span class="nx">i</span> <span class="p">&lt;</span> <span class="o">*</span><span class="nx">amountOfRunLogs</span><span class="p">;</span> <span class="nx">i</span><span class="o">++</span> <span class="p">{</span>
+    <span class="nx">delta_seconds</span> <span class="o">:=</span> <span class="nx">m2</span><span class="p">[</span><span class="nx">i</span><span class="p">].</span><span class="nx">Timestamp</span> <span class="o">-</span> <span class="nx">m2</span><span class="p">[</span><span class="nx">i</span><span class="o">+</span><span class="mi">1</span><span class="p">].</span><span class="nx">Timestamp</span>
+    <span class="nx">delta_kilobytes</span> <span class="o">:=</span> <span class="nx">m2</span><span class="p">[</span><span class="nx">i</span><span class="o">+</span><span class="mi">1</span><span class="p">].</span><span class="nx">Available</span> <span class="o">-</span> <span class="nx">m2</span><span class="p">[</span><span class="nx">i</span><span class="p">].</span><span class="nx">Available</span>
+    <span class="nx">delta_kilobytes1</span> <span class="o">:=</span> <span class="nb">int32</span><span class="p">(</span><span class="nx">delta_kilobytes</span><span class="p">)</span> <span class="o">*</span> <span class="nb">int32</span><span class="p">(</span><span class="mi">1024</span><span class="p">)</span>
+    <span class="nx">delta_kilobytes</span> <span class="p">=</span> <span class="nx">delta_kilobytes1</span>
+
+    <span class="k">if</span> <span class="nx">delta_seconds</span> <span class="p">&lt;</span> <span class="mi">1</span> <span class="p">{</span>
+      <span class="nx">delta_seconds</span> <span class="p">=</span> <span class="mi">1</span>
+    <span class="p">}</span>
+
+    <span class="k">if</span> <span class="nx">i</span> <span class="o">==</span> <span class="mi">1</span> <span class="p">{</span>
+      <span class="nx">rate</span> <span class="p">=</span> <span class="nb">int32</span><span class="p">(</span><span class="nx">delta_kilobytes</span><span class="p">)</span> <span class="o">/</span> <span class="nb">int32</span><span class="p">(</span><span class="nx">delta_seconds</span><span class="p">)</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+      <span class="nx">rate2</span> <span class="p">=</span> <span class="nb">int32</span><span class="p">(</span><span class="nx">delta_kilobytes</span><span class="p">)</span> <span class="o">/</span> <span class="nb">int32</span><span class="p">(</span><span class="nx">delta_seconds</span><span class="p">)</span>
+      <span class="k">if</span> <span class="nx">rate2</span> <span class="o">&lt;=</span> <span class="nx">rate</span> <span class="p">{</span>
+        <span class="nx">rate</span> <span class="p">=</span> <span class="nx">rate2</span>
+      <span class="p">}</span>
+    <span class="p">}</span>
+
+    <span class="k">if</span> <span class="o">*</span><span class="nx">debug</span> <span class="p">{</span>
+      <span class="nx">fmt</span><span class="p">.</span><span class="nx">Println</span><span class="p">(</span><span class="s">&quot;Run: &quot;</span><span class="p">,</span> <span class="nx">i</span><span class="p">)</span>
+      <span class="nx">fmt</span><span class="p">.</span><span class="nx">Printf</span><span class="p">(</span><span class="s">&quot;Seconds: %v\n&quot;</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="nx">delta_seconds</span><span class="p">))</span>
+      <span class="nx">fmt</span><span class="p">.</span><span class="nx">Printf</span><span class="p">(</span><span class="s">&quot;Kilobytes: %v\n&quot;</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="nx">delta_kilobytes</span><span class="p">))</span>
+      <span class="nx">fmt</span><span class="p">.</span><span class="nx">Printf</span><span class="p">(</span><span class="s">&quot;Rate: %v\n&quot;</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="nx">rate</span><span class="p">))</span>
+      <span class="nx">fmt</span><span class="p">.</span><span class="nx">Printf</span><span class="p">(</span><span class="s">&quot;Rate2: %v\n&quot;</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="nx">rate2</span><span class="p">))</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+
+  <span class="k">if</span> <span class="nx">rate</span> <span class="p">&lt;</span> <span class="mi">1</span> <span class="p">{</span>
+    <span class="nx">rate</span> <span class="p">=</span> <span class="mi">1</span>
+  <span class="p">}</span>
+  <span class="k">return</span> <span class="nx">rate</span>
+<span class="p">}</span>
+
+<span class="c1">// replace &quot;/&quot; with mnt, cannot create files with &quot;/&quot; in the name due to file system</span>
+<span class="kd">func</span> <span class="nx">mntPointName</span><span class="p">(</span><span class="nx">mntPnt</span> <span class="o">*</span><span class="kt">string</span><span class="p">)</span> <span class="kt">string</span> <span class="p">{</span>
+  <span class="nx">mnt</span> <span class="o">:=</span> <span class="o">*</span><span class="nx">mntPnt</span>
+  <span class="k">if</span> <span class="nx">strings</span><span class="p">.</span><span class="nx">EqualFold</span><span class="p">(</span><span class="o">*</span><span class="nx">mntPnt</span><span class="p">,</span> <span class="s">&quot;/&quot;</span><span class="p">)</span> <span class="p">{</span>
+    <span class="nx">mnt</span> <span class="p">=</span> <span class="s">&quot;root&quot;</span>
+  <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+    <span class="nx">mnt</span> <span class="p">=</span> <span class="nx">strings</span><span class="p">.</span><span class="nx">Replace</span><span class="p">(</span><span class="nx">mnt</span><span class="p">,</span> <span class="s">&quot;/&quot;</span><span class="p">,</span> <span class="s">&quot;mnt&quot;</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+  <span class="p">}</span>
+  <span class="k">return</span> <span class="nx">mnt</span>
+<span class="p">}</span>
+
+<span class="c1">// adds new record</span>
+<span class="kd">func</span> <span class="p">(</span><span class="nx">m</span> <span class="o">*</span><span class="nx">MapMountState</span><span class="p">)</span> <span class="nx">add</span><span class="p">(</span><span class="nx">mState</span> <span class="o">*</span><span class="nx">MountState</span><span class="p">)</span> <span class="p">{</span>
+  <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="o">*</span><span class="nx">m</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span> <span class="p">{</span> <span class="c1">// if no data, start at 1</span>
+    <span class="nx">m2</span> <span class="o">:=</span> <span class="nb">make</span><span class="p">(</span><span class="nx">MapMountState</span><span class="p">)</span>
+    <span class="nx">m2</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="p">=</span> <span class="nx">mState</span>
+    <span class="o">*</span><span class="nx">m</span> <span class="p">=</span> <span class="nx">m2</span>
+  <span class="p">}</span> <span class="k">else</span> <span class="p">{</span> <span class="c1">// increment all indexes by one and add new record to first index</span>
+    <span class="nx">m2</span> <span class="o">:=</span> <span class="o">*</span><span class="nx">m</span>
+    <span class="nx">mSize</span> <span class="o">:=</span> <span class="nb">len</span><span class="p">(</span><span class="nx">m2</span><span class="p">)</span>
+
+    <span class="k">for</span> <span class="nx">i</span> <span class="o">:=</span> <span class="nx">mSize</span><span class="p">;</span> <span class="nx">i</span> <span class="p">&gt;</span> <span class="mi">0</span><span class="p">;</span> <span class="nx">i</span><span class="o">--</span> <span class="p">{</span>
+      <span class="k">if</span> <span class="nx">i</span><span class="o">+</span><span class="mi">1</span> <span class="o">&lt;=</span> <span class="o">*</span><span class="nx">amountOfRunLogs</span> <span class="p">{</span>
+        <span class="nx">m2</span><span class="p">[</span><span class="nx">i</span><span class="o">+</span><span class="mi">1</span><span class="p">]</span> <span class="p">=</span> <span class="nx">m2</span><span class="p">[</span><span class="nx">i</span><span class="p">]</span>
+      <span class="p">}</span>
+    <span class="p">}</span>
+
+    <span class="nx">m2</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="p">=</span> <span class="nx">mState</span>
+    <span class="o">*</span><span class="nx">m</span> <span class="p">=</span> <span class="nx">m2</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// executes df and captures output</span>
+<span class="kd">func</span> <span class="nx">getMountData</span><span class="p">(</span><span class="nx">mnt</span> <span class="o">*</span><span class="kt">string</span><span class="p">)</span> <span class="p">[]</span><span class="kt">byte</span> <span class="p">{</span>
+  <span class="nx">out</span><span class="p">,</span> <span class="nx">err</span> <span class="o">:=</span> <span class="nx">exec</span><span class="p">.</span><span class="nx">Command</span><span class="p">(</span><span class="s">&quot;/bin/df&quot;</span><span class="p">,</span> <span class="s">&quot;-P&quot;</span><span class="p">,</span> <span class="s">&quot;-l&quot;</span><span class="p">,</span> <span class="s">&quot;-x none&quot;</span><span class="p">,</span> <span class="s">&quot;-x unknown&quot;</span><span class="p">,</span> <span class="s">&quot;-x iso9660&quot;</span><span class="p">,</span> <span class="s">&quot;-x squashfs&quot;</span><span class="p">,</span> <span class="s">&quot;-x udf&quot;</span><span class="p">,</span> <span class="s">&quot;-x romfs&quot;</span><span class="p">,</span> <span class="s">&quot;-x ramfs&quot;</span><span class="p">,</span> <span class="s">&quot;-x debugfs&quot;</span><span class="p">,</span> <span class="s">&quot;-x simfs&quot;</span><span class="p">,</span> <span class="s">&quot;-x tmpfs&quot;</span><span class="p">,</span> <span class="s">&quot;-x devtmpfs&quot;</span><span class="p">,</span> <span class="o">*</span><span class="nx">mnt</span><span class="p">).</span><span class="nx">Output</span><span class="p">()</span>
+  <span class="k">if</span> <span class="nx">err</span> <span class="o">!=</span> <span class="kc">nil</span> <span class="p">{</span>
+    <span class="nx">fmt</span><span class="p">.</span><span class="nx">Println</span><span class="p">(</span><span class="s">&quot;Failed to run DF&quot;</span><span class="p">)</span>
+    <span class="nx">log</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="nx">err</span><span class="p">)</span>
+  <span class="p">}</span>
+  <span class="k">return</span> <span class="nx">out</span>
+<span class="p">}</span>
+
+<span class="c1">// convert string to int</span>
+<span class="kd">func</span> <span class="nx">read_int32</span><span class="p">(</span><span class="nx">data</span> <span class="p">[]</span><span class="kt">byte</span><span class="p">)</span> <span class="p">(</span><span class="nx">ret</span> <span class="kt">int32</span><span class="p">)</span> <span class="p">{</span>
+  <span class="nx">buf</span> <span class="o">:=</span> <span class="nx">bytes</span><span class="p">.</span><span class="nx">NewBuffer</span><span class="p">(</span><span class="nx">data</span><span class="p">)</span>
+  <span class="nx">binary</span><span class="p">.</span><span class="nx">Read</span><span class="p">(</span><span class="nx">buf</span><span class="p">,</span> <span class="nx">binary</span><span class="p">.</span><span class="nx">LittleEndian</span><span class="p">,</span> <span class="o">&amp;</span><span class="nx">ret</span><span class="p">)</span>
+  <span class="k">return</span>
+<span class="p">}</span>
+
+<span class="c1">// parse output from DF</span>
+<span class="kd">func</span> <span class="nx">parseDF</span><span class="p">()</span> <span class="p">[][]</span><span class="kt">byte</span> <span class="p">{</span>
+  <span class="nx">dfMatch</span> <span class="o">:=</span> <span class="nx">regexp</span><span class="p">.</span><span class="nx">MustCompile</span><span class="p">(</span><span class="s">`(?P&lt;mount&gt;[^\s]+)\s+(?P&lt;total&gt;\d+)\s+(?P&lt;used&gt;\d+)\s+(?P&lt;available&gt;\d+)\s+(?P&lt;capacity&gt;\d+)%\s+(?P&lt;mountfolder&gt;[^\s|\n]+)`</span><span class="p">)</span>
+  <span class="k">return</span> <span class="nx">dfMatch</span><span class="p">.</span><span class="nx">FindSubmatch</span><span class="p">(</span><span class="nx">getMountData</span><span class="p">(</span><span class="nx">mountPoint</span><span class="p">))</span>
+<span class="p">}</span>
+
+<span class="c1">// simple error checking</span>
+<span class="kd">func</span> <span class="nx">check</span><span class="p">(</span><span class="nx">e</span> <span class="kt">error</span><span class="p">)</span> <span class="p">{</span>
+  <span class="k">if</span> <span class="nx">e</span> <span class="o">!=</span> <span class="kc">nil</span> <span class="p">{</span>
+    <span class="nb">panic</span><span class="p">(</span><span class="nx">e</span><span class="p">)</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// read state file into memory</span>
+<span class="kd">func</span> <span class="nx">GobDecoder</span><span class="p">(</span><span class="nx">fname</span> <span class="kt">string</span><span class="p">)</span> <span class="nx">MapMountState</span> <span class="p">{</span>
+  <span class="nx">fh</span><span class="p">,</span> <span class="nx">err</span> <span class="o">:=</span> <span class="nx">os</span><span class="p">.</span><span class="nx">OpenFile</span><span class="p">(</span><span class="nx">fname</span><span class="p">,</span> <span class="nx">os</span><span class="p">.</span><span class="nx">O_RDWR</span><span class="p">,</span> <span class="mo">0666</span><span class="p">)</span>
+  <span class="nx">mntMap</span> <span class="o">:=</span> <span class="nb">make</span><span class="p">(</span><span class="nx">MapMountState</span><span class="p">)</span>
+  <span class="k">if</span> <span class="nx">err</span> <span class="o">==</span> <span class="kc">nil</span> <span class="p">{</span>
+    <span class="c1">// Get gob of data</span>
+    <span class="nx">dec</span> <span class="o">:=</span> <span class="nx">gob</span><span class="p">.</span><span class="nx">NewDecoder</span><span class="p">(</span><span class="nx">fh</span><span class="p">)</span>
+    <span class="nx">err</span> <span class="p">=</span> <span class="nx">dec</span><span class="p">.</span><span class="nx">Decode</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">mntMap</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nx">err</span> <span class="o">!=</span> <span class="kc">nil</span> <span class="p">{</span>
+      <span class="nx">log</span><span class="p">.</span><span class="nx">Println</span><span class="p">(</span><span class="nx">err</span><span class="p">)</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+  <span class="nx">fh</span><span class="p">.</span><span class="nx">Close</span><span class="p">()</span>
+  <span class="k">return</span> <span class="nx">mntMap</span>
+<span class="p">}</span>
+
+<span class="c1">// write state in memory to file</span>
+<span class="kd">func</span> <span class="nx">GobEncoder</span><span class="p">(</span><span class="nx">mstoreFname</span> <span class="kt">string</span><span class="p">,</span> <span class="nx">mStore</span> <span class="kd">map</span><span class="p">[</span><span class="kt">int</span><span class="p">]</span><span class="o">*</span><span class="nx">MountState</span><span class="p">)</span> <span class="p">{</span>
+  <span class="c1">// Store gob of data</span>
+  <span class="nx">fh</span><span class="p">,</span> <span class="nx">err</span> <span class="o">:=</span> <span class="nx">os</span><span class="p">.</span><span class="nx">OpenFile</span><span class="p">(</span><span class="nx">mstoreFname</span><span class="p">,</span> <span class="nx">os</span><span class="p">.</span><span class="nx">O_WRONLY</span><span class="p">|</span><span class="nx">os</span><span class="p">.</span><span class="nx">O_CREATE</span><span class="p">,</span> <span class="mo">0666</span><span class="p">)</span>
+  <span class="nx">enc</span> <span class="o">:=</span> <span class="nx">gob</span><span class="p">.</span><span class="nx">NewEncoder</span><span class="p">(</span><span class="nx">fh</span><span class="p">)</span>
+  <span class="nx">err</span> <span class="p">=</span> <span class="nx">enc</span><span class="p">.</span><span class="nx">Encode</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">mStore</span><span class="p">)</span>
+  <span class="k">if</span> <span class="nx">err</span> <span class="o">!=</span> <span class="kc">nil</span> <span class="p">{</span>
+    <span class="nb">panic</span><span class="p">(</span><span class="nx">err</span><span class="p">)</span>
+  <span class="p">}</span>
+  <span class="nx">fh</span><span class="p">.</span><span class="nx">Close</span><span class="p">()</span>
+<span class="p">}</span>
+</pre></div>
+
+            </div>
+        </div>
+
+        
+        <div class="col-md-3">
+            <div class="well well-sm"> 
+                <h4>June 19, 2014<br>
+                <small>701 words</small></h4>
+                <hr>
+                <strong>Categories</strong>
+                <ul class="list-unstyled">
+                
+                </ul>
+                <hr>
+                <strong>Tags</strong><br>
+                
+            </div>
+                <div class="panel panel-default">
+        <div class="panel-heading" style="padding: 2px 15px;">
+            <h4>Connect. Socialize.</h4>
+        </div>
+        <div class="panel-body">
+            <a href="https://github.com/SomeSillyUserNameHere/" class="btn btn-primary btn-xs"><i class="fa fa-github-square fa-2x"></i></a>
+            <a href="https://www.facebook.com/SomeSillyUserNameHere" class="btn btn-info btn-xs"><i class="fa fa-facebook-square fa-2x"></i></a>
+
+            <div class="alert alert-info alert-dismissable" style="margin-top:25px;margin-bottom:5px;">
+                <button type="button" class="close" data-dismiss="alert" aria-hidden="true">&times;</button>
+                <strong>Hey, listen!</strong><br>
+                You should modify the <code>layouts/chrome/menu.html</code> template and include your own profile links.
+            </div>
+        </div>
+    </div>
+        </div>
+    </div>
+        <footer>
+            <div class="row">
+                <hr>
+                <div class="col-sm-12">
+                    <p>&copy; Enthusiastic Hugo User 2014<br>
+                    Built with <a href="https://github.com/spf13/hugo">Hugo</a></p>
+                </div>
+            </div>
+        </footer>
+</div>
+
+    <script src="http://localhost:1313/js/jquery.js"></script>
+    <script src="http://localhost:1313/js/bootstrap.js"></script>
+<script>document.write('<script src="http://'
+        + (location.host || 'localhost').split(':')[0]
+		+ ':1313/livereload.js?mindelay=10"></'
+        + 'script>')</script></body>
+</html>
